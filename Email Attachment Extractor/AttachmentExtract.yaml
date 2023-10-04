@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation Template to build email attachment extraction infastructure. 
+Parameters:
+  ConfigSetName:
+    Type: String
+Resources:
+  # S3 Bucket to Hold Raw EmaiL Files from SES
+  MailBucket:
+    Type: AWS::S3::Bucket
+
+  # Bucket Policy For MailBucket allowing SES to place files in the bucket. 
+  MailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MailBucket
+      PolicyDocument:
+        Statement:
+          - 
+            Sid: Allow placing emails into bucket from SES
+            Action:
+              - s3:PutObject
+            Effect: Allow
+            Resource: 
+              - !Sub '${MailBucket.Arn}'
+              - !Sub '${MailBucket.Arn}/*'
+            Principal:
+              Service: ses.amazonaws.com
+
+  # S3 Bucket to store extracted attachments. 
+  AttachmentBucket: 
+    Type: AWS::S3::Bucket
+
+  # Configuration for sending email via SES
+  ConfigSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Ref ConfigSetName
+
+  # Rules for recieving emails. 
+  DefaultRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+
+  # Default Rule for email from *@dev.test.com
+  DefaultRule:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      Rule:
+        Recipients:
+          - "dev.test.com"
+        Actions:
+          - S3Action:
+              BucketName: !Ref MailBucket
+        Enabled: true
+        ScanEnabled: true
+      RuleSetName: !Ref DefaultRuleSet
+    DependsOn: MailBucketPolicy
+
+  # IAM Managed Policy for extraction role. 
+  AttachmentExtractionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowGetAndDeleteMailFiles
+            Effect: Allow
+            Action: 
+              - S3:DeleteObject
+              - S3:GetObject
+            Resource:
+              - !Sub '${MailBucket.Arn}'
+              - !Sub '${MailBucket.Arn}/*'
+          - Sid: AllowPutAttachments
+            Effect: Allow
+            Action:
+              - S3:Put
+            Resource:
+              - !Sub '${AttachmentBucket.Arn}'
+              - !Sub '${AttachmentBucket.Arn}/*'
+
+  # Role used by Lambda to extract attachments. 
+  AttachmentExtractionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref AttachmentExtractionPolicy
+
+  ExtractionFunctions:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs18.x
+      Role: !GetAtt AttachmentExtractionRole.Arn
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { S3Client, ListBucketsCommand } = require("@aws-sdk/client-s3");
+          // Code Goes Here!
+      Description: Extract Attachments From Email Files
