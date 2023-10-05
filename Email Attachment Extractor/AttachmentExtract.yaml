@@ -104,3 +104,4 @@ Resources:
           const { S3Client, ListBucketsCommand } = require("@aws-sdk/client-s3");
           // Code Goes Here!
       Description: Extract Attachments From Email Files
+
