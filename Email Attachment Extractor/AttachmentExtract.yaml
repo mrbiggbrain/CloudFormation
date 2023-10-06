@@ -7,6 +7,15 @@ Resources:
   # S3 Bucket to Hold Raw EmaiL Files from SES
   MailBucket:
     Type: AWS::S3::Bucket
+      
+  MailBucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref MailBucket
+      NotificationConfiguration:
+        LambdaConfiguration:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt ExtractionFunctions.Arn
 
   # Bucket Policy For MailBucket allowing SES to place files in the bucket. 
   MailBucketPolicy:
@@ -96,12 +105,64 @@ Resources:
   ExtractionFunctions:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs18.x
+      Runtime: python3.9
       Role: !GetAtt AttachmentExtractionRole.Arn
-      Handler: index.handler
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          DESTINATION_BUCKET: !Ref AttachmentBucket
       Code:
         ZipFile: |
-          const { S3Client, ListBucketsCommand } = require("@aws-sdk/client-s3");
-          // Code Goes Here!
+          import os
+          import boto3
+          import email
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+
+          s3_client = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              # Get the destination bucket ARN from environment variables
+              destination_bucket_arn = os.environ.get('DESTINATION_BUCKET')
+
+              # Iterate through the S3 events triggered by the PUT operation
+              for record in event['Records']:
+                  bucket_name = record['s3']['bucket']['name']
+                  object_key = record['s3']['object']['key']
+
+                  # Download the email file from S3
+                  email_object = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+                  email_content = email_object['Body'].read().decode('utf-8')
+
+                  # Parse the email
+                  msg = email.message_from_string(email_content)
+
+                  # Process email attachments
+                  for part in msg.walk():
+                      if part.get_content_maintype() == 'multipart':
+                          continue
+                      if part.get('Content-Disposition') is None:
+                          continue
+
+                      # Extract attachment
+                      attachment = part.get_payload(decode=True)
+                      attachment_name = part.get_filename()
+
+                      # Upload the attachment to the destination bucket
+                      s3_client.put_object(Bucket=destination_bucket_arn, Key=attachment_name, Body=attachment)
+
+              return {
+                  'statusCode': 200,
+                  'body': 'Attachments extracted and uploaded successfully.'
+              }
       Description: Extract Attachments From Email Files
 
+  # Allow S3 to call the Lambda
+  MailBucketLambdaRule:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref ExtractionFunctions
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt MailBucket.Arn
+      SourceAccount: !Ref AWS::AccountId
